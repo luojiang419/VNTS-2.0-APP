@@ -21,6 +21,8 @@ const DEFAULT_PANEL_USERNAME: &str = "luojiang";
 const DEFAULT_PANEL_PASSWORD: &str = "luojiang";
 const PASSWORD_ITERATIONS: u32 = 120_000;
 #[cfg(target_os = "windows")]
+const DETACHED_PROCESS: u32 = 0x00000008;
+#[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 static CURRENT_SESSION: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
@@ -1197,7 +1199,7 @@ fn is_permission_error(error: &anyhow::Error) -> bool {
 
 #[cfg(target_os = "windows")]
 fn configure_no_window(command: &mut Command) {
-    command.creation_flags(CREATE_NO_WINDOW);
+    command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
 }
 
 #[cfg(not(target_os = "windows"))]
