@@ -1,0 +1,32 @@
+name: vnts_panel_windows
+description: "VNTS 2.0 Windows desktop console based on Flutter + Rust."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  flutter_rust_bridge: 2.1.0
+  rust_lib_vnt_app:
+    path: rust_builder
+  shared_preferences: ^2.2.3
+  window_manager: ^0.3.9
+  path_provider: ^2.1.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/app_icon.ico
+    - assets/app_icon.png
+    - assets/log4rs.yaml
+    - assets/bundled/vnts2.exe
+    - assets/bundled/config.toml
