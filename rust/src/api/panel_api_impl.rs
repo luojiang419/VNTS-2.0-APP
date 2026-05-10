@@ -545,6 +545,8 @@ $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $exePath = '{exe_path}'
 $commandLine = '{command_line}'
 $processes = Get-CimInstance Win32_Process -Filter "Name='vnts2.exe'" | Where-Object {{ $_.ExecutablePath -eq $exePath }}
+$tcpListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
+$udpListeners = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue)
 $process = $null
 $processPayload = $null
 $activeSince = ''
@@ -554,9 +556,9 @@ $description = 'Portable VNTS 2.0 runtime'
 foreach ($candidate in $processes) {{
   try {{
     $proc = Get-Process -Id $candidate.ProcessId -ErrorAction Stop
-    $tcpListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }})
-    $udpListeners = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }})
-    $hasListeners = ($tcpListeners.Count -gt 0 -or $udpListeners.Count -gt 0)
+    $candidateTcpListeners = @($tcpListeners | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }})
+    $candidateUdpListeners = @($udpListeners | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }})
+    $hasListeners = ($candidateTcpListeners.Count -gt 0 -or $candidateUdpListeners.Count -gt 0)
     if ($hasListeners -or $null -eq $process) {{
       $process = $candidate
       $activeSince = $proc.StartTime.ToString('yyyy-MM-dd HH:mm:ss')

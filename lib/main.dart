@@ -407,14 +407,17 @@ class _VntsPanelAppState extends State<VntsPanelApp> {
     _logTimer?.cancel();
   }
 
+  bool get _isLogsSectionActive => _section == ConsoleSection.logs;
+
   void _startTimers() {
     _stopTimers();
-    _statusTimer = Timer.periodic(const Duration(seconds: 6), (_) async {
+    _statusTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!_session.authenticated) return;
       await _refreshOverviewOnly();
     });
-    _logTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+    _logTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       if (!_session.authenticated) return;
+      if (!_isLogsSectionActive) return;
       await _refreshLogs(showToast: false);
     });
   }
@@ -423,7 +426,7 @@ class _VntsPanelAppState extends State<VntsPanelApp> {
     final overview = getServiceOverview();
     final snapshot = loadStructuredConfig();
     final account = getPanelAccountSummary();
-    final logs = readLogTail(lines: 200);
+    final logs = _isLogsSectionActive ? readLogTail(lines: 120) : _logSnapshot;
     final forcePasswordChange =
         _session.authenticated && requiresForcedPasswordChange(account);
     if (forcePasswordChange) {
@@ -460,8 +463,11 @@ class _VntsPanelAppState extends State<VntsPanelApp> {
   }
 
   Future<void> _refreshLogs({bool showToast = true}) async {
+    if (!_isLogsSectionActive && !showToast) {
+      return;
+    }
     try {
-      final logs = readLogTail(lines: 200);
+      final logs = readLogTail(lines: 120);
       if (!mounted) return;
       setState(() {
         _logSnapshot = logs;
@@ -599,7 +605,9 @@ class _VntsPanelAppState extends State<VntsPanelApp> {
       setState(() {
         _overview = overview;
       });
-      await _refreshLogs(showToast: false);
+      if (_isLogsSectionActive) {
+        await _refreshLogs(showToast: false);
+      }
       _showMessage('本地实例已执行 $action。');
     });
   }
@@ -1048,7 +1056,12 @@ class _VntsPanelAppState extends State<VntsPanelApp> {
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: FilledButton.tonalIcon(
-                        onPressed: () => setState(() => _section = section),
+                        onPressed: () {
+                          setState(() => _section = section);
+                          if (section == ConsoleSection.logs) {
+                            unawaited(_refreshLogs(showToast: false));
+                          }
+                        },
                         icon: Icon(section.icon),
                         label: Text(section.label),
                         style: _sidebarNavButtonStyle(
@@ -1150,6 +1163,7 @@ class _VntsPanelAppState extends State<VntsPanelApp> {
       return const Center(child: CircularProgressIndicator());
     }
     final canControl = canControlInstalledService(overview);
+    final isRunning = overview.status.isActive;
     return ListView(
       children: [
         Text(
@@ -1200,21 +1214,21 @@ class _VntsPanelAppState extends State<VntsPanelApp> {
                   runSpacing: 12,
                   children: [
                     FilledButton.icon(
-                      onPressed: canControl && !_busy
+                      onPressed: canControl && !isRunning && !_busy
                           ? () => _controlService('start')
                           : null,
                       icon: const Icon(Icons.play_arrow),
                       label: const Text('启动'),
                     ),
                     FilledButton.tonalIcon(
-                      onPressed: canControl && !_busy
+                      onPressed: canControl && isRunning && !_busy
                           ? () => _controlService('restart')
                           : null,
                       icon: const Icon(Icons.restart_alt),
                       label: const Text('重启'),
                     ),
                     OutlinedButton.icon(
-                      onPressed: canControl && !_busy
+                      onPressed: canControl && isRunning && !_busy
                           ? () => _controlService('stop')
                           : null,
                       icon: const Icon(Icons.stop_circle_outlined),
