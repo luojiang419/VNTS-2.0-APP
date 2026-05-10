@@ -20,6 +20,7 @@ const DEFAULT_SERVICE_NAME: &str = "vnts2";
 const DEFAULT_PANEL_USERNAME: &str = "luojiang";
 const DEFAULT_PANEL_PASSWORD: &str = "luojiang";
 const PASSWORD_ITERATIONS: u32 = 120_000;
+const DATA_ROOT_OVERRIDE_ENV: &str = "VNTS_PANEL_DATA_ROOT";
 #[cfg(target_os = "windows")]
 const DETACHED_PROCESS: u32 = 0x00000008;
 #[cfg(target_os = "windows")]
@@ -543,8 +544,9 @@ fn query_service_status() -> anyhow::Result<ServiceStatus> {
         r#"
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $exePath = '{exe_path}'
+$configPath = '{config_path}'
 $commandLine = '{command_line}'
-$processes = Get-CimInstance Win32_Process -Filter "Name='vnts2.exe'" | Where-Object {{ $_.ExecutablePath -eq $exePath }}
+$processes = Get-CimInstance Win32_Process -Filter "Name='vnts2.exe'"
 $tcpListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
 $udpListeners = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue)
 $process = $null
@@ -559,6 +561,15 @@ foreach ($candidate in $processes) {{
     $candidateTcpListeners = @($tcpListeners | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }})
     $candidateUdpListeners = @($udpListeners | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }})
     $hasListeners = ($candidateTcpListeners.Count -gt 0 -or $candidateUdpListeners.Count -gt 0)
+    $matchesExecutablePath = ($candidate.ExecutablePath -eq $exePath)
+    $matchesCommandLine = (-not [string]::IsNullOrWhiteSpace($candidate.CommandLine)) -and (
+      $candidate.CommandLine -like "*$exePath*" -or
+      $candidate.CommandLine -like "*$configPath*"
+    )
+    $isTargetProcess = $hasListeners -or $matchesExecutablePath -or $matchesCommandLine
+    if (-not $isTargetProcess) {{
+      continue
+    }}
     if ($hasListeners -or $null -eq $process) {{
       $process = $candidate
       $activeSince = $proc.StartTime.ToString('yyyy-MM-dd HH:mm:ss')
@@ -604,6 +615,7 @@ foreach ($candidate in $processes) {{
 }} | ConvertTo-Json -Depth 4 -Compress
 "#,
         exe_path = ps_quote(&detection.executable_path),
+        config_path = ps_quote(&detection.config_path),
         command_line = ps_quote(&detection.command_line),
         service_name = ps_quote(DEFAULT_SERVICE_NAME),
     );
@@ -1224,7 +1236,9 @@ fn current_exe_dir() -> PathBuf {
 }
 
 fn portable_data_root() -> PathBuf {
-    current_exe_dir().join("data")
+    std::env::var_os(DATA_ROOT_OVERRIDE_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| current_exe_dir().join("data"))
 }
 
 fn inspect_runtime_layout() -> RuntimeLayoutState {
@@ -1360,13 +1374,57 @@ fn stop_portable_process() -> anyhow::Result<()> {
         r#"
 $ErrorActionPreference = 'Stop'
 $exePath = '{exe_path}'
-$processes = Get-CimInstance Win32_Process -Filter "Name='vnts2.exe'" | Where-Object {{ $_.ExecutablePath -eq $exePath }}
-foreach ($process in $processes) {{
-  Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+$configPath = '{config_path}'
+$deadline = (Get-Date).AddSeconds(8)
+do {{
+  $tcpListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
+  $udpListeners = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue)
+  $processes = @(
+    Get-CimInstance Win32_Process -Filter "Name='vnts2.exe'" | Where-Object {{
+      $candidate = $_
+      $hasListeners = (
+        @($tcpListeners | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }}).Count -gt 0 -or
+        @($udpListeners | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }}).Count -gt 0
+      )
+      $matchesExecutablePath = ($candidate.ExecutablePath -eq $exePath)
+      $matchesCommandLine = ((-not [string]::IsNullOrWhiteSpace($candidate.CommandLine)) -and (
+        $candidate.CommandLine -like "*$exePath*" -or
+        $candidate.CommandLine -like "*$configPath*"
+      ))
+      $hasListeners -or $matchesExecutablePath -or $matchesCommandLine
+    }}
+  )
+  if ($processes.Count -eq 0) {{
+    break
+  }}
+  foreach ($process in $processes) {{
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+  }}
+  Start-Sleep -Milliseconds 300
+}} while ((Get-Date) -lt $deadline)
+$remaining = @(
+  $tcpListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
+  $udpListeners = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue)
+  Get-CimInstance Win32_Process -Filter "Name='vnts2.exe'" | Where-Object {{
+    $candidate = $_
+    $hasListeners = (
+      @($tcpListeners | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }}).Count -gt 0 -or
+      @($udpListeners | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }}).Count -gt 0
+    )
+    $matchesExecutablePath = ($candidate.ExecutablePath -eq $exePath)
+    $matchesCommandLine = ((-not [string]::IsNullOrWhiteSpace($candidate.CommandLine)) -and (
+      $candidate.CommandLine -like "*$exePath*" -or
+      $candidate.CommandLine -like "*$configPath*"
+    ))
+    $hasListeners -or $matchesExecutablePath -or $matchesCommandLine
+  }}
+)
+if ($remaining.Count -gt 0) {{
+  throw "Timed out waiting for vnts2.exe to exit."
 }}
-Start-Sleep -Milliseconds 500
 "#,
         exe_path = ps_quote(&detection.executable_path),
+        config_path = ps_quote(&detection.config_path),
     );
     run_powershell_script(&script, false).map(|_| ())
 }
@@ -1374,6 +1432,9 @@ Start-Sleep -Milliseconds 500
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    const TEST_DATA_ROOT_ENV: &str = "VNTS_PANEL_TEST_DATA_ROOT";
 
     #[test]
     fn parses_conf_path_from_service_command() {
@@ -1449,5 +1510,61 @@ mod tests {
             updated_at: now_string(),
         };
         assert!(!requires_password_change(&record));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires real Windows distribution runtime directory"]
+    fn smoke_test_real_distribution_service_control() {
+        let data_root = std::env::var(TEST_DATA_ROOT_ENV)
+            .expect("VNTS_PANEL_TEST_DATA_ROOT must point to the distribution data directory");
+        let original_override: Option<OsString> = std::env::var_os(DATA_ROOT_OVERRIDE_ENV);
+        std::env::set_var(DATA_ROOT_OVERRIDE_ENV, &data_root);
+
+        let result = (|| -> anyhow::Result<()> {
+            let _ = stop_portable_process();
+            std::thread::sleep(Duration::from_millis(700));
+            let stopped = query_service_status()?;
+            assert!(
+                !stopped.is_active,
+                "service should be stopped before smoke test"
+            );
+
+            start_portable_process()?;
+            let running = query_service_status()?;
+            assert!(running.is_active, "service should be running after start");
+            assert!(running.pid > 0, "running service should expose a pid");
+
+            run_service_action("restart")?;
+            let restarted = query_service_status()?;
+            assert!(
+                restarted.is_active,
+                "service should be running after restart"
+            );
+            assert!(restarted.pid > 0, "restarted service should expose a pid");
+
+            stop_portable_process()?;
+            std::thread::sleep(Duration::from_millis(700));
+            let stopped_again = query_service_status()?;
+            assert!(
+                !stopped_again.is_active,
+                "service should be stopped after stop"
+            );
+
+            start_portable_process()?;
+            let running_again = query_service_status()?;
+            assert!(
+                running_again.is_active,
+                "service should be running after final start"
+            );
+            Ok(())
+        })();
+
+        match original_override {
+            Some(value) => std::env::set_var(DATA_ROOT_OVERRIDE_ENV, value),
+            None => std::env::remove_var(DATA_ROOT_OVERRIDE_ENV),
+        }
+
+        result.expect("distribution smoke test");
     }
 }
