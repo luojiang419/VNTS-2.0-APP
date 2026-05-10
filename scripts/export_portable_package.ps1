@@ -8,6 +8,7 @@ $bundledSourceDir = Join-Path $releaseDataDir 'flutter_assets\assets\bundled'
 $distRoot = Join-Path $projectDir 'dist\portable'
 $packageDir = Join-Path $distRoot 'VNTS2_Windows_Portable'
 $zipPath = Join-Path $distRoot 'VNTS2_Windows_Portable.zip'
+$zipOutputPath = $zipPath
 $runtimeDestDir = Join-Path $packageDir 'data\vnts2_runtime'
 
 function Require-Path {
@@ -25,9 +26,33 @@ function Reset-Path {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     if (Test-Path -LiteralPath $Path) {
-        Remove-Item -LiteralPath $Path -Recurse -Force
+        Remove-WithRetry -Path $Path -Recurse
     }
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
+}
+
+function Remove-WithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$Recurse
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Force -ErrorAction Stop -Recurse:$Recurse
+            return
+        } catch {
+            $lastError = $_
+            Start-Sleep -Milliseconds 400
+        }
+    }
+
+    throw $lastError
 }
 
 function Copy-WithRetry {
@@ -77,10 +102,14 @@ if (-not (Test-Path -LiteralPath $distRoot)) {
     New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
 }
 if (Test-Path -LiteralPath $packageDir) {
-    Remove-Item -LiteralPath $packageDir -Recurse -Force
+    Remove-WithRetry -Path $packageDir -Recurse
 }
 if (Test-Path -LiteralPath $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
+    try {
+        Remove-WithRetry -Path $zipPath
+    } catch {
+        $zipOutputPath = Join-Path $distRoot ("VNTS2_Windows_Portable_{0}.zip" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+    }
 }
 New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
@@ -150,10 +179,10 @@ if ($panelEntries.Count -ne 0) {
     throw 'Portable package panel directory must be empty.'
 }
 
-Compress-Archive -LiteralPath $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
+Compress-Archive -LiteralPath $packageDir -DestinationPath $zipOutputPath -CompressionLevel Optimal -Force
 
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
-$zipStream = [System.IO.File]::OpenRead($zipPath)
+$zipStream = [System.IO.File]::OpenRead($zipOutputPath)
 try {
     $zipHash = [System.BitConverter]::ToString($sha256.ComputeHash($zipStream)).Replace('-', '')
 } finally {
@@ -161,5 +190,5 @@ try {
     $sha256.Dispose()
 }
 Write-Host "[OK] Portable directory: $packageDir"
-Write-Host "[OK] Portable zip: $zipPath"
+Write-Host "[OK] Portable zip: $zipOutputPath"
 Write-Host "[OK] ZIP SHA256: $zipHash"

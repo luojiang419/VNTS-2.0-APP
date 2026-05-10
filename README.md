@@ -45,6 +45,13 @@ cd vnts2.0windows
 scripts\export_portable_package.bat
 ```
 
+## 导出安装版
+
+```bat
+cd vnts2.0windows
+scripts\export_installer_package.bat
+```
+
 ## 调试运行
 
 ```bat
@@ -76,10 +83,15 @@ scripts\run_windows.bat
 - `dist\portable\VNTS2_Windows_Portable\`
 - `dist\portable\VNTS2_Windows_Portable.zip`
 
+用于对外发送的安装版位于：
+
+- `dist\installer\VNTS2_Windows_Setup.exe`
+
 这里的分发包会和开发 `Release\` 区分开：
 
 - `Release\` 允许保留当前机器运行后生成的状态文件，便于本机调试
 - `dist\portable\` 只保留首启必需文件，不包含日志、证书、数据库、备份和账号状态文件
+- `dist\installer\` 基于便携 ZIP 自动封装为安装程序，默认引导用户选择安装目录后再解压部署
 
 ## 首次使用
 
