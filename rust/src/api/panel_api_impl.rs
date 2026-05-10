@@ -542,42 +542,60 @@ fn query_service_status() -> anyhow::Result<ServiceStatus> {
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $exePath = '{exe_path}'
 $commandLine = '{command_line}'
-$process = Get-CimInstance Win32_Process -Filter "Name='vnts2.exe'" | Where-Object {{ $_.ExecutablePath -eq $exePath }} | Select-Object -First 1
+$processes = Get-CimInstance Win32_Process -Filter "Name='vnts2.exe'" | Where-Object {{ $_.ExecutablePath -eq $exePath }}
+$process = $null
 $processPayload = $null
 $activeSince = ''
-if ($null -ne $process) {{
+$activeState = 'Stopped'
+$subState = 'Stopped'
+$description = 'Portable VNTS 2.0 runtime'
+foreach ($candidate in $processes) {{
   try {{
-    $proc = Get-Process -Id $process.ProcessId -ErrorAction Stop
-    $activeSince = $proc.StartTime.ToString('yyyy-MM-dd HH:mm:ss')
-    $elapsedSeconds = [int]((Get-Date) - $proc.StartTime).TotalSeconds
-    $days = [int]($elapsedSeconds / 86400)
-    $hours = [int](($elapsedSeconds % 86400) / 3600)
-    $minutes = [int](($elapsedSeconds % 3600) / 60)
-    $seconds = [int]($elapsedSeconds % 60)
-    $elapsedText = '{{0:00}}.{{1:00}}:{{2:00}}:{{3:00}}' -f $days, $hours, $minutes, $seconds
-    $processPayload = [pscustomobject]@{{
-      cpuDisplay = if ($null -ne $proc.CPU) {{ '{{0:N1}} s' -f $proc.CPU }} else {{ '' }}
-      memoryDisplay = '{{0:N1}} MB' -f ($proc.WorkingSet64 / 1MB)
-      elapsed = $elapsedText
-      command = $commandLine
+    $proc = Get-Process -Id $candidate.ProcessId -ErrorAction Stop
+    $tcpListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }})
+    $udpListeners = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | Where-Object {{ $_.OwningProcess -eq $candidate.ProcessId }})
+    $hasListeners = ($tcpListeners.Count -gt 0 -or $udpListeners.Count -gt 0)
+    if ($hasListeners -or $null -eq $process) {{
+      $process = $candidate
+      $activeSince = $proc.StartTime.ToString('yyyy-MM-dd HH:mm:ss')
+      $elapsedSeconds = [int]((Get-Date) - $proc.StartTime).TotalSeconds
+      $days = [int]($elapsedSeconds / 86400)
+      $hours = [int](($elapsedSeconds % 86400) / 3600)
+      $minutes = [int](($elapsedSeconds % 3600) / 60)
+      $seconds = [int]($elapsedSeconds % 60)
+      $elapsedText = '{{0:00}}.{{1:00}}:{{2:00}}:{{3:00}}' -f $days, $hours, $minutes, $seconds
+      $processPayload = [pscustomobject]@{{
+        cpuDisplay = if ($null -ne $proc.CPU) {{ '{{0:N1}} s' -f $proc.CPU }} else {{ '' }}
+        memoryDisplay = '{{0:N1}} MB' -f ($proc.WorkingSet64 / 1MB)
+        elapsed = $elapsedText
+        command = if ([string]::IsNullOrWhiteSpace($candidate.CommandLine)) {{ $commandLine }} else {{ $candidate.CommandLine }}
+      }}
+      if ($hasListeners) {{
+        $activeState = 'Running'
+        $subState = 'OK'
+        break
+      }}
+      $activeState = 'Starting'
+      $subState = 'Starting'
+      $description = 'Portable VNTS 2.0 runtime (进程已启动，等待监听端口就绪)'
     }}
   }} catch {{
-    $processPayload = $null
+    continue
   }}
 }}
 [pscustomobject]@{{
   serviceName = '{service_name}'
-  description = 'Portable VNTS 2.0 runtime'
+  description = $description
   loadState = 'portable'
-  activeState = if ($null -ne $process) {{ 'Running' }} else {{ 'Stopped' }}
-  subState = if ($null -ne $process) {{ 'OK' }} else {{ 'Stopped' }}
+  activeState = $activeState
+  subState = $subState
   unitFileState = 'portable'
   pid = if ($null -ne $process) {{ [uint64]$process.ProcessId }} else {{ [uint64]0 }}
   mainCode = '0'
   mainStatus = '0'
   activeSince = $activeSince
   fragmentPath = $commandLine
-  isActive = ($null -ne $process)
+  isActive = ($activeState -eq 'Running')
   process = $processPayload
 }} | ConvertTo-Json -Depth 4 -Compress
 "#,
@@ -1274,15 +1292,24 @@ fn start_portable_process() -> anyhow::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     configure_no_window(&mut command);
-    command
+    let mut child = command
         .spawn()
         .with_context(|| format!("启动 vnts2.exe 失败：{}", detection.executable_path))?;
-    std::thread::sleep(Duration::from_millis(800));
-    let status = query_service_status()?;
-    if !status.is_active {
-        bail!("{}", build_start_failure_message(&detection));
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(250));
+        let status = query_service_status()?;
+        if status.is_active {
+            return Ok(());
+        }
+        if child.try_wait().ok().flatten().is_some() {
+            break;
+        }
     }
-    Ok(())
+    let status = query_service_status()?;
+    if status.is_active {
+        return Ok(());
+    }
+    bail!("{}", build_start_failure_message(&detection));
 }
 
 fn build_start_failure_message(detection: &ServiceDetection) -> String {
