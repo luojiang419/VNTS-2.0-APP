@@ -1124,7 +1124,7 @@ fn run_standard_powershell_file(script_path: &Path) -> anyhow::Result<String> {
         "-File",
         script_path.to_string_lossy().as_ref(),
     ]);
-    configure_no_window(&mut command);
+    configure_hidden_console(&mut command);
     let output = command.output().context("启动 PowerShell 失败")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -1147,7 +1147,7 @@ fn run_elevated_powershell_file(script_path: &Path) -> anyhow::Result<String> {
         "-Command",
         &launcher,
     ]);
-    configure_no_window(&mut command);
+    configure_hidden_console(&mut command);
     let output = command.output().context("启动提权 PowerShell 失败")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -1198,12 +1198,20 @@ fn is_permission_error(error: &anyhow::Error) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn configure_no_window(command: &mut Command) {
+fn configure_hidden_console(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_hidden_console(_command: &mut Command) {}
+
+#[cfg(target_os = "windows")]
+fn configure_detached_background(command: &mut Command) {
     command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
 }
 
 #[cfg(not(target_os = "windows"))]
-fn configure_no_window(_command: &mut Command) {}
+fn configure_detached_background(_command: &mut Command) {}
 
 fn current_exe_dir() -> PathBuf {
     std::env::current_exe()
@@ -1293,7 +1301,7 @@ fn start_portable_process() -> anyhow::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    configure_no_window(&mut command);
+    configure_detached_background(&mut command);
     let mut child = command
         .spawn()
         .with_context(|| format!("启动 vnts2.exe 失败：{}", detection.executable_path))?;
